@@ -15,6 +15,26 @@
 
 (function (port) {
     'use strict';
+	Date.prototype.format = function(fmt) { 
+		var o = { 
+			"M+" : this.getMonth()+1,                 //月份 
+			"d+" : this.getDate(),                    //日 
+			"h+" : this.getHours(),                   //小时 
+			"m+" : this.getMinutes(),                 //分 
+			"s+" : this.getSeconds(),                 //秒 
+			"q+" : Math.floor((this.getMonth()+3)/3), //季度 
+			"S"  : this.getMilliseconds()             //毫秒 
+		}; 
+		if(/(y+)/.test(fmt)) {
+            fmt=fmt.replace(RegExp.$1, (this.getFullYear()+"").substr(4 - RegExp.$1.length)); 
+		}
+		for(var k in o) {
+			if(new RegExp("("+ k +")").test(fmt)){
+				fmt = fmt.replace(RegExp.$1, (RegExp.$1.length==1) ? (o[k]) : (("00"+ o[k]).substr((""+ o[k]).length)));
+			}
+		}
+		return fmt; 
+	}
     var path = require('path'),
         fs = require('fs'),
         // Since Node 0.8, .existsSync() moved from path to fs:
@@ -27,9 +47,9 @@
             publicDir: __dirname + '/public',
             uploadDir: __dirname + '/public/files',
             uploadUrl: '/files/',
-            maxPostSize: 11000000000, // 11 GB
-            minFileSize: 1,
-            maxFileSize: 10000000000, // 10 GB
+            maxPostSize: 20 * 1024 * 1024, // 20 MB
+            minFileSize: 1024,
+            maxFileSize: 20 * 1024 * 1024, // 20 MB
             acceptFileTypes: /.+/i,
             // Files not matched by this regular expression force a download dialog,
             // to prevent executing any scripts in the context of the service domain:
@@ -37,9 +57,13 @@
             imageTypes: /\.(gif|jpe?g|png)$/i,
             imageVersions: {
                 'thumbnail': {
-                    width: 80,
-                    height: 80
-                }
+                    width: 200,
+                    height: 200
+                },
+				'middle': {
+				   width: 600,
+				   height: 600
+				}
             },
             accessControl: {
                 allowOrigin: '*',
@@ -111,7 +135,28 @@
                     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
                     res.setHeader('Content-Disposition', 'inline; filename="files.json"');
                 },
-                handler = new UploadHandler(req, res, handleResult);
+                handler = new UploadHandler(req, res, handleResult),
+				firstOpt = function () {//自己加的部分（判定当前的目录和日期是否匹配，不匹配就创建新的目录，注意要修改options）
+					var uploadDir = options.uploadDir;
+					var dateStr = new Date().format("yyyyMMdd");
+					var nowDir = __dirname + '/public/' + dateStr;
+					if(uploadDir != nowDir){
+						baseUrl = nowDir;
+						if (!fs.existsSync(baseUrl)) {
+							fs.mkdirSync(baseUrl);
+						}
+						var baseUrl = nowDir + '/thumbnail';
+						if (!fs.existsSync(baseUrl)) {
+							fs.mkdirSync(baseUrl);
+						}
+						baseUrl = nowDir + '/middle';
+						if (!fs.existsSync(baseUrl)) {
+							fs.mkdirSync(baseUrl);
+						}
+						options.uploadDir = nowDir;
+						options.uploadUrl = '/' + dateStr + '/';
+					}
+				};
             switch (req.method) {
             case 'OPTIONS':
                 res.end();
@@ -130,6 +175,7 @@
                 }
                 break;
             case 'POST':
+				firstOpt();
                 setNoCacheHeaders();
                 handler.post();
                 break;
@@ -164,8 +210,20 @@
         return !this.error;
     };
     FileInfo.prototype.safeName = function () {
+        var uuid = require('node-uuid');//this.name
         // Prevent directory traversal and creating hidden system files:
         this.name = path.basename(this.name).replace(/^\.+/, '');
+        this.name = this.name.split(".")
+        if(this.name[this.name.length-1] === 'ipa' || this.name[this.name.length-1] === 'apk'){
+            var today = new Date();
+            var dd = today.getDate();
+            var mm = today.getMonth()+1;
+            this.name = 'devzb_'+mm+dd+'.'+this.name[this.name.length-1];
+        }else{
+            this.name = uuid.v1()+'.'+this.name[this.name.length-1];    
+        }
+        
+        // console.log(JSON.stringify(this.name))
         // Prevent overwriting existing files:
         while (_existsSync(options.uploadDir + '/' + this.name)) {
             this.name = this.name.replace(nameCountRegexp, nameCountFunc);
@@ -173,9 +231,7 @@
     };
     FileInfo.prototype.initUrls = function (req) {
         if (!this.error) {
-            var that = this,
-                baseUrl = (options.ssl ? 'https:' : 'http:') +
-                    '//192.168.0.225' + options.uploadUrl;
+            var that = this, baseUrl = (options.ssl ? 'https://' : 'http://') + req.headers.host + options.uploadUrl;
             this.url = this.deleteUrl = baseUrl + encodeURIComponent(this.name);
             Object.keys(options.imageVersions).forEach(function (version) {
                 if (_existsSync(
@@ -268,17 +324,10 @@
         }).on('end', finish).parse(handler.req);
     };
     UploadHandler.prototype.destroy = function () {
-        var handler = this,
-            fileName;
-console.log('handler.req.url',handler.req.url);
-
-console.log('handler.req.url.slice(0, options.uploadUrl.length)',handler.req.url.slice(0, options.uploadUrl.length));
-console.log('options.uploadUrl',options.uploadUrl);
+        var handler = this, fileName;
         if (handler.req.url.slice(0, options.uploadUrl.length) === options.uploadUrl) {
             fileName = path.basename(decodeURIComponent(handler.req.url));
-console.log('fileName',fileName);
             if (fileName[0] !== '.') {
-console.log('path',options.uploadDir + '/' + fileName);
                 fs.unlink(options.uploadDir + '/' + fileName, function (ex) {
                     Object.keys(options.imageVersions).forEach(function (version) {
                         fs.unlink(options.uploadDir + '/' + version + '/' + fileName);
